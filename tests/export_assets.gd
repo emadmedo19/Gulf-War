@@ -2,6 +2,7 @@ extends SceneTree
 
 func _initialize():
 	var checks = {
+		"res://assets/mummy_eri.png": Vector2i(920, 1009),
 		"res://assets/actors.webp": Vector2i(1448, 1086),
 		"res://assets/cave.webp": Vector2i(1536, 1024),
 		"res://assets/desert.webp": Vector2i(1536, 1024),
@@ -30,5 +31,11 @@ func _initialize():
 		push_error("Music failed to load from export")
 		quit(1)
 		return
+	var atlas = load("res://mummy_sprite.gd").new()
+	if atlas.frames == null or atlas.frames.walk_lower.size() != 12:
+		push_error("Mummy atlas data missing from export")
+		quit(1)
+		return
+	print("PASS: original sprite sheet and atlas loaded from export")
 	print("PASS: music loaded from export")
 	quit()

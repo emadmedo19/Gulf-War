@@ -38,5 +38,11 @@
     "sha256": "8a0d79421933c4461e60e5fc946aa5670e53813ee37f112855acdd165efcf476",
     "width": 1774,
     "height": 887
+  },
+  "mummy_eri.png": {
+    "bytes": 153552,
+    "sha256": "39fbb7e513a40caf733142e91bb8579cb8fe329dec7606e5bdbc8bc107f38d03",
+    "width": 920,
+    "height": 1009
   }
 }

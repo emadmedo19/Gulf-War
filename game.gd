@@ -48,14 +48,16 @@ var assembling_packet = -1
 var packet_parts: Dictionary = {}
 var finish_delay = 0.0
 var music: AudioStreamPlayer
+var mummy_sprite
 
 func _ready():
 	RenderingServer.set_default_clear_color(Color("171d23"))
-	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	desert_texture = load("res://assets/desert.webp")
 	actor_texture = load("res://assets/actors.webp")
 	mech_texture = load("res://assets/mech.webp")
 	combat = load("res://combat.gd").new(self)
+	mummy_sprite = load("res://mummy_sprite.gd").new()
 	create_audio()
 	music = AudioStreamPlayer.new()
 	music.stream = load("res://assets/action_loop.wav")
@@ -73,9 +75,11 @@ func _ready():
 	title.add_theme_font_size_override("font_size", 27)
 	menu.add_child(title)
 	var city = make_button("مدينة / CITY", Vector2(290, 150), func(): start_game(false))
-	city.size.x = 180
-	var cave_button = make_button("كهف / CAVE", Vector2(490, 150), func(): start_game(false, 2))
-	cave_button.size.x = 180
+	city.size.x = 115
+	var cave_button = make_button("كهف / CAVE", Vector2(420, 150), func(): start_game(false, 2))
+	cave_button.size.x = 115
+	var mummy_button = make_button("MUMMY", Vector2(550, 150), start_mummy)
+	mummy_button.size.x = 120
 	if not OS.has_feature("web"):
 		make_button("إنشاء غرفة / HOST", Vector2(290, 207), host_game)
 	address = LineEdit.new()
@@ -334,7 +338,8 @@ func simulate(dt: float, local: Array):
 		p.inv -= dt
 		if p.hp <= 0: continue
 		var direction = int(c[1]) - int(c[0])
-		p.vx = move_toward(p.vx, direction * 255.0, (1900.0 if direction != 0 else 2400.0) * dt)
+		var speed = 130.0 if p.get("skin", "") == "mummy" else 255.0
+		p.vx = move_toward(p.vx, direction * speed, (1900.0 if direction != 0 else 2400.0) * dt)
 		p.x = clampf(p.x + p.vx * dt, 25, END - 130)
 		if direction != 0: p.face = direction
 		p.buffer = maxf(0, p.buffer - dt)
@@ -477,6 +482,10 @@ func box(x: float, y: float, w: float, h: float, color: String):
 	draw_rect(Rect2(minf(x, x + w), minf(y, y + h), absf(w), absf(h)), Color(color))
 
 func soldier(x: float, y: float, row: int, face: int, moving: bool, firing: bool = false, airborne: bool = false, tint: Color = Color.WHITE):
+	if row < players.size() and players[row].get("skin", "") == "mummy":
+		draw_ellipse_shadow(Vector2(x, y + 1), 20)
+		mummy_sprite.draw_actor(self, Vector2(x, y), face, moving, firing, airborne, clock, tint)
+		return
 	if actor_texture == null: return
 	var frame = 1 + int(clock * 11) % 2 if moving else 0
 	if airborne: frame = 2
@@ -564,7 +573,7 @@ func _draw():
 	draw_set_transform(Vector2.ZERO)
 	# HUD is drawn in viewport coordinates with explicit margins, independent of text layout.
 	draw_rect(Rect2(20, 16, 240, 65), Color(0.05, 0.1, 0.13, 0.87))
-	text_at(Vector2(33, 39), "P1  /  FALCON", 17, Color("f7dca8"))
+	text_at(Vector2(33, 39), "P1 / MUMMY ERI" if players[0].get("skin", "") == "mummy" else "P1 / FALCON", 17, Color("f7dca8"))
 	box(34, 50, 210, 13, "3c423c")
 	box(36, 52, 206.0 * players[0].hp / 100, 9, "81ba65")
 	if players.size() > 1:
@@ -730,3 +739,7 @@ func _exit_tree():
 	for voice in voices:
 		if is_instance_valid(voice): voice.stop()
 	if combat != null: combat.game = null
+
+func start_mummy():
+	start_game(false, 2)
+	players[0].skin = "mummy"
