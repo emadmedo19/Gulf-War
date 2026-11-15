@@ -1,0 +1,14 @@
+config_version=5
+[application]
+config/name="Gulf-War"
+run/main_scene="res://main.tscn"
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=540
+window/stretch/mode="canvas_items"
+window/handheld/orientation=0
+[rendering]
+renderer/rendering_method="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+[network]
+limits/debugger/max_chars_per_second=32768
