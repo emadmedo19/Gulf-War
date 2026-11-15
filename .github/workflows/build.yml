@@ -45,9 +45,12 @@ jobs:
           unzip -q /tmp/templates.tpz -d /tmp/godot-templates
           mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           cp /tmp/godot-templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+      - name: Verify artwork bytes
+        run: python3 tests/asset_integrity.py
       - name: Import and test
         run: |
           godot --headless --editor --path . --quit
+          godot --headless --path . --script res://tests/export_assets.gd
           godot --headless --path . --script res://tests/smoke.gd
           godot --headless --path . --script res://tests/action.gd
           python3 tests/network_test.py
@@ -56,6 +59,8 @@ jobs:
           mkdir -p build/web
           godot --headless --path . --export-release Web build/web/index.html
           touch build/web/.nojekyll
+          cp tests/export_assets.gd "$RUNNER_TEMP/check-export.gd"
+          godot --headless --main-pack build/web/index.pck --script "$RUNNER_TEMP/check-export.gd"
       - uses: actions/upload-artifact@v4
         with:
           name: Gulf-War-browser
@@ -80,7 +85,10 @@ jobs:
           ]) + '\n')
           PY
       - name: Export Android APK
-        run: godot --headless --path . --export-debug Android build/Gulf-War.apk
+        run: |
+          godot --headless --path . --export-debug Android build/Gulf-War.apk
+          python3 tests/apk_resources.py build/Gulf-War.apk "$RUNNER_TEMP/Gulf-War-resources.zip"
+          godot --headless --main-pack "$RUNNER_TEMP/Gulf-War-resources.zip" --script "$RUNNER_TEMP/check-export.gd"
       - uses: actions/upload-artifact@v4
         with:
           name: Gulf-War-Android-APK

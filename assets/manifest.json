@@ -1,0 +1,20 @@
+{
+  "desert.webp": {
+    "bytes": 898244,
+    "sha256": "1bf5f1dfc066f439f1e5f927a2aa0f5a01070590809d836250a97c2e2b8eee0d",
+    "width": 1536,
+    "height": 1024
+  },
+  "mech.webp": {
+    "bytes": 796606,
+    "sha256": "3e0c53cfcc0bb441e34759a551f9108b6c4909d883527e18e39a0728253efb6e",
+    "width": 1496,
+    "height": 1051
+  },
+  "actors.webp": {
+    "bytes": 572376,
+    "sha256": "fc29111ebaa2c9746e17c553206ce7e3237ef74737ffbb42e51d5d9a5422f248",
+    "width": 1448,
+    "height": 1086
+  }
+}
