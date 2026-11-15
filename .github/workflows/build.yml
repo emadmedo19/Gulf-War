@@ -49,6 +49,8 @@ jobs:
         run: |
           godot --headless --editor --path . --quit
           godot --headless --path . --script res://tests/smoke.gd
+          godot --headless --path . --script res://tests/action.gd
+          python3 tests/network_test.py
       - name: Export browser edition
         run: |
           mkdir -p build/web

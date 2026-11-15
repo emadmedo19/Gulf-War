@@ -19,6 +19,7 @@ func run():
 	assert(game.enemies[0].hp == 0)
 	assert(game.score == 100)
 	game.start_game(true)
+	game.online = false
 	assert(game.players.size() == 2)
 	game.remote_controls = [false, true, false, false, false]
 	origin = game.players[1].x

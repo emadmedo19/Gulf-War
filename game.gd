@@ -25,9 +25,31 @@ var status: Label
 var address: LineEdit
 var hud: Label
 var note: Label
+var desert_texture: Texture2D
+var actor_texture: Texture2D
+var mech_texture: Texture2D
+var visual_positions: Dictionary = {}
+var local_controls = [false, false, false, false, false]
+var boss_x = 3160.0
+var boss_recoil = 0.0
+var boss_phase = 0.0
+var shake = 0.0
+var effects: Array = []
+var render_positions: Dictionary = {}
+var last_remote_input = 0.0
+var sound_bank: Dictionary = {}
+var voices: Array = []
+var voice_index = 0
+var fire_audio_cooldown = 0.0
+var muzzle_phase = 0.0
 
 func _ready():
-	RenderingServer.set_default_clear_color(Color("d69a63"))
+	RenderingServer.set_default_clear_color(Color("171d23"))
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	desert_texture = load("res://assets/desert.webp")
+	actor_texture = load("res://assets/actors.webp")
+	mech_texture = load("res://assets/mech.webp")
+	create_audio()
 	menu = Control.new()
 	add_child(menu)
 	var panel = Panel.new()
@@ -132,12 +154,19 @@ func start_game(networked: bool):
 	if not networked: host = true
 	players.clear()
 	for i in range(2 if networked else 1):
-		players.append({"x": 120.0 + i * 65, "y": GROUND, "vy": 0.0, "hp": 100, "face": 1, "cd": 0.0, "inv": 0.0, "grenades": 5, "gcd": 0.0})
+		players.append({"x": 120.0 + i * 65, "y": GROUND, "vx": 0.0, "vy": 0.0, "jump_held": false, "buffer": 0.0, "hp": 100, "face": 1, "cd": 0.0, "inv": 0.0, "grenades": 5, "gcd": 0.0})
 	enemies.clear()
 	for x in [650, 920, 1200, 1530, 1760, 2050, 2300, 2580, 2800]:
-		enemies.append({"x": float(x), "hp": 12, "cd": randf_range(0.5, 2.0)})
+		enemies.append({"x": float(x), "hp": 12, "cd": randf_range(0.5, 2.0), "vx": 0.0, "face": -1, "stun": 0.0})
 	shots.clear()
 	particles.clear()
+	effects.clear()
+	render_positions.clear()
+	local_controls.fill(false)
+	boss_x = 3160.0
+	boss_phase = 0.0
+	shake = 0.0
+	camera_x = 0.0
 	controls.fill(false)
 	remote_controls.fill(false)
 	touch_actions.clear()
@@ -152,9 +181,10 @@ func start_game(networked: bool):
 func input_packet(values: Array):
 	if host and values.size() == 5 and multiplayer.get_remote_sender_id() in multiplayer.get_peers():
 		for i in range(5): remote_controls[i] = values[i] == true
+		last_remote_input = clock
 
 @rpc("authority", "unreliable_ordered")
-func snapshot(p: Array, e: Array, s: Array, hp: int, points: int, done: bool):
+func snapshot(p: Array, e: Array, s: Array, hp: int, points: int, done: bool, mech_x: float, phase: float, recoil: float):
 	if not host:
 		players = p
 		enemies = e
@@ -162,6 +192,20 @@ func snapshot(p: Array, e: Array, s: Array, hp: int, points: int, done: bool):
 		boss_hp = hp
 		score = points
 		finished = done
+		boss_x = mech_x
+		boss_phase = phase
+		boss_recoil = recoil
+
+func make_snapshot() -> PackedByteArray:
+	return var_to_bytes([players, enemies, shots, boss_hp, score, finished, boss_x, boss_phase, boss_recoil]).compress(FileAccess.COMPRESSION_DEFLATE)
+
+@rpc("authority", "unreliable_ordered")
+func compressed_snapshot(payload: PackedByteArray):
+	if host or payload.size() > 32768: return
+	var raw = payload.decompress_dynamic(262144, FileAccess.COMPRESSION_DEFLATE)
+	if raw.is_empty(): return
+	var decoded = bytes_to_var(raw)
+	if decoded is Array and decoded.size() == 9: snapshot.callv(decoded)
 
 func _input(event):
 	if event is InputEventKey:
@@ -192,27 +236,50 @@ func action_at(pos: Vector2) -> int:
 	return -1
 
 func _process(dt):
-	dt = min(dt, 0.04)
+	dt = minf(dt, 0.08)
 	clock += dt
+	fire_audio_cooldown = maxf(0, fire_audio_cooldown - dt)
+	shake = move_toward(shake, 0, dt * 22)
+	local_controls = controls.duplicate()
+	for a in touch_actions.values():
+		if a >= 0: local_controls[a] = true
+	for n in range(effects.size() - 1, -1, -1):
+		var fx = effects[n]
+		fx.life -= dt
+		fx.x += fx.vx * dt
+		fx.y += fx.vy * dt
+		fx.vy += (360 if fx.kind != "smoke" else -12) * dt
+		if fx.life <= 0: effects.remove_at(n)
 	if playing:
-		var local = controls.duplicate()
-		for a in touch_actions.values():
-			if a >= 0: local[a] = true
-		if host and not finished:
-			simulate(dt, local)
-		sync_clock += dt
-		if online and sync_clock > 0.033:
-			sync_clock = 0.0
-			if host: snapshot.rpc(players, enemies, shots, boss_hp, score, finished)
-			else: input_packet.rpc_id(1, local)
+		for i in range(players.size()):
+			var p = players[i]
+			var target = Vector2(p.x, p.y)
+			var previous: Vector2 = render_positions.get(i, target)
+			if previous.distance_to(target) > 180: previous = target
+			render_positions[i] = previous.lerp(target, 1.0 - exp(-dt * (55.0 if host else 24.0)))
+		if not host and not finished:
+			for shot in shots:
+				shot.x += shot.vx * dt
+				shot.y += shot.vy * dt
+				if shot.grenade: shot.vy += 950 * dt
 		var idx = 0 if host else 1
-		if players.size() > idx: camera_x = clampf(players[idx].x - 350, 0, END - 960)
-		var health = ""
-		for i in range(players.size()): health += "P%d  ♥ %d    " % [i + 1, players[i].hp]
-		hud.text = health + "     SCORE %06d" % score
-		if finished: note.text = "المهمة اكتملت!" if boss_hp <= 0 else "انتهت المحاولة • ارجع للقائمة وأعد اللعب"
-		else: note.text = "BOSS  %d" % boss_hp if camera_x > 2000 else "DUNE OUTPOST  •  MISSION 01"
+		if players.size() > idx:
+			var wanted = clampf(players[idx].x - 330, 0, END - 960)
+			camera_x = lerpf(camera_x, wanted, 1 - exp(-dt * 8))
+		hud.text = ""
+		note.text = ""
 	queue_redraw()
+
+func _physics_process(dt):
+	if not playing: return
+	if host and not finished:
+		if online and clock - last_remote_input > 0.45: remote_controls.fill(false)
+		simulate(dt, local_controls)
+	sync_clock += dt
+	if online and sync_clock >= 1.0 / 30.0:
+		sync_clock = 0.0
+		if host: compressed_snapshot.rpc(make_snapshot())
+		else: input_packet.rpc_id(1, local_controls)
 
 func simulate(dt: float, local: Array):
 	for i in range(players.size()):
@@ -223,16 +290,27 @@ func simulate(dt: float, local: Array):
 		p.inv -= dt
 		if p.hp <= 0: continue
 		var direction = int(c[1]) - int(c[0])
-		p.x = clampf(p.x + direction * 235 * dt, 25, END - 130)
+		p.vx = move_toward(p.vx, direction * 255.0, (1900.0 if direction != 0 else 2400.0) * dt)
+		p.x = clampf(p.x + p.vx * dt, 25, END - 130)
 		if direction != 0: p.face = direction
-		if c[2] and p.y >= GROUND:
-			p.vy = -540.0
+		p.buffer = maxf(0, p.buffer - dt)
+		if c[2] and not p.jump_held: p.buffer = 0.12
+		if p.buffer > 0 and p.y >= GROUND:
+			p.vy = -565.0
+			p.buffer = 0.0
+			local_fx(p.x, GROUND, "dust", 5)
+		if not c[2] and p.jump_held and p.vy < -210: p.vy = -210.0
+		p.jump_held = c[2]
 		p.vy += 1350 * dt
 		p.y = minf(GROUND, p.y + p.vy * dt)
-		if p.y >= GROUND: p.vy = 0.0
+		if p.y >= GROUND:
+			if p.vy > 160: local_fx(p.x, GROUND, "dust", 8)
+			p.vy = 0.0
 		if c[3] and p.cd <= 0:
-			spawn_shot(p.x + p.face * 28, p.y - 36, p.face * 760, 0, false, false)
-			p.cd = 0.13
+			spawn_shot(p.x + p.face * 51, p.y - 61, p.face * 760, 0, false, false)
+			p.cd = 0.115
+			local_fx(p.x + p.face * 20, p.y - 58, "casing", 1)
+			play_sound("fire")
 		if c[4] and p.gcd <= 0 and p.grenades > 0:
 			spawn_shot(p.x, p.y - 45, p.face * 360, -430, false, true)
 			p.grenades -= 1
@@ -240,17 +318,41 @@ func simulate(dt: float, local: Array):
 	for e in enemies:
 		if e.hp <= 0: continue
 		e.cd -= dt
+		e.stun = maxf(0, e.stun - dt)
 		var target = nearest_player(e.x)
 		if target.is_empty(): continue
-		if absf(target.x - e.x) < 620 and e.cd <= 0:
-			spawn_shot(e.x, GROUND - 33, signf(target.x - e.x) * 275, 0, true, false)
-			e.cd = 1.5
+		var distance = absf(target.x - e.x)
+		e.face = 1 if target.x > e.x else -1
+		var speed = 0.0
+		if distance < 720 and distance > 300: speed = e.face * 82.0
+		elif distance < 160: speed = -e.face * 48.0
+		if e.cd < 0.24 or e.cd > 1.3 or e.stun > 0: speed = 0
+		e.vx = move_toward(e.vx, speed, dt * 540)
+		e.x = clampf(e.x + e.vx * dt, 380, END - 150)
+		if distance < 620 and e.cd <= 0 and e.stun <= 0:
+			spawn_shot(e.x + e.face * 48, GROUND - 55, e.face * 300, 0, true, false)
+			e.cd = randf_range(1.35, 1.9)
+	boss_phase += dt
+	boss_recoil = move_toward(boss_recoil, 0, dt * 25)
 	if boss_hp > 0:
 		boss_cooldown -= dt
-		var target = nearest_player(3160)
-		if not target.is_empty() and target.x > 2450 and boss_cooldown <= 0:
-			for y in [GROUND - 30, GROUND - 95]: spawn_shot(3070, y, -330, 0, true, false)
-			boss_cooldown = 1.1
+		var target = nearest_player(boss_x)
+		if not target.is_empty() and target.x > 2350:
+			boss_x = move_toward(boss_x, 3040.0 + sin(boss_phase * 0.65) * 95, dt * 28)
+			if boss_cooldown <= 0:
+				var enraged = boss_hp < 65
+				for y in [GROUND - 48, GROUND - 115]: spawn_shot(boss_x - 144, y, -370 if enraged else -320, 0, true, false)
+				boss_cooldown = 0.65 if enraged else 1.05
+				boss_recoil = 7.0
+				local_fx(boss_x + 95, GROUND - 182, "smoke", 2)
+	for p in players:
+		if boss_hp > 0 and p.hp > 0 and p.inv <= 0 and absf(p.x - boss_x) < 115 and p.y > GROUND - 125:
+			p.hp = maxi(0, p.hp - 20)
+			p.inv = 1.0
+			p.vx = -350.0
+			p.x = maxf(25, boss_x - 125)
+			shake = maxf(shake, 4)
+			play_sound("hit")
 	for n in range(shots.size() - 1, -1, -1):
 		var s = shots[n]
 		s.x += s.vx * dt
@@ -263,19 +365,27 @@ func simulate(dt: float, local: Array):
 			remove = true
 		elif not s.enemy and not s.grenade:
 			for e in enemies:
-				if e.hp > 0 and absf(s.x - e.x) < 23 and absf(s.y - (GROUND - 28)) < 32:
+				if e.hp > 0 and absf(s.x - e.x) < 23 and absf(s.y - (GROUND - 46)) < 48:
 					e.hp -= 4
+					e.stun = 0.12
+					impact_event(s.x, s.y, "spark")
 					remove = true
-					if e.hp <= 0: score += 100
+					if e.hp <= 0:
+						score += 100
+						dispatch_burst(e.x, GROUND - 35, false)
 					break
-			if not remove and boss_hp > 0 and s.x > 3075 and s.x < 3270 and s.y > GROUND - 155:
+			if not remove and boss_hp > 0 and s.x > boss_x - 135 and s.x < boss_x + 120 and s.y > GROUND - 155:
 				boss_hp = maxi(0, boss_hp - 2)
+				impact_event(s.x, s.y, "spark")
+				if boss_hp == 0: dispatch_burst(boss_x, GROUND - 85, true)
 				remove = true
 		elif s.enemy:
 			for p in players:
-				if p.hp > 0 and p.inv <= 0 and absf(p.x - s.x) < 20 and absf((p.y - 30) - s.y) < 30:
+				if p.hp > 0 and p.inv <= 0 and absf(p.x - s.x) < 20 and absf((p.y - 46) - s.y) < 48:
 					p.hp = maxi(0, p.hp - 10)
 					p.inv = 0.7
+					shake = maxf(shake, 2.5)
+					play_sound("hit")
 					remove = true
 		if remove: shots.remove_at(n)
 	for n in range(particles.size() - 1, -1, -1):
@@ -299,78 +409,212 @@ func spawn_shot(x: float, y: float, vx: float, vy: float, enemy: bool, grenade: 
 	shots.append({"x": x, "y": y, "vx": vx, "vy": vy, "enemy": enemy, "grenade": grenade, "life": 4.0})
 
 func explode(x: float):
-	particles.append({"x": x, "life": 0.45})
+	dispatch_burst(x, GROUND - 25, true)
 	for e in enemies:
 		if e.hp > 0 and absf(e.x - x) < 135:
 			e.hp = 0
 			score += 100
-	if absf(3160 - x) < 180: boss_hp = maxi(0, boss_hp - 30)
+	if absf(boss_x - x) < 180:
+		boss_hp = maxi(0, boss_hp - 30)
+		if boss_hp == 0: dispatch_burst(boss_x, GROUND - 100, true)
 
 func box(x: float, y: float, w: float, h: float, color: String):
 	draw_rect(Rect2(minf(x, x + w), minf(y, y + h), absf(w), absf(h)), Color(color))
 
-func soldier(x: float, y: float, color: String, face: int, moving: bool):
-	var step = sin(clock * 14) * 5 if moving else 0.0
-	box(x - 14, y - 25, 10, 22 + step, "34352e")
-	box(x + 3, y - 25, 10, 22 - step, "34352e")
-	box(x - 18, y - 4 + step, 16, 6, "202c30")
-	box(x + 2, y - 4 - step, 17, 6, "202c30")
-	box(x - 15, y - 48, 30, 27, color)
-	box(x - 10, y - 66, 22, 21, "e2ad7d")
-	box(x - 12, y - 69, 25, 9, "30302e")
-	box(x - 15, y - 61, 28, 5, color)
-	box(x + face * 6 - 6, y - 38, 22 * face, 9, "e2ad7d")
-	box(x + face * 12, y - 40, 31 * face, 8, "29363a")
-	box(x + face * 31, y - 43, 9 * face, 5, "667375")
+func soldier(x: float, y: float, row: int, face: int, moving: bool, firing: bool = false, airborne: bool = false):
+	if actor_texture == null: return
+	var frame = 1 + int(clock * 11) % 2 if moving else 0
+	if airborne: frame = 2
+	if firing and not moving and not airborne: frame = 3
+	var cell = Vector2(actor_texture.get_width() / 4.0, actor_texture.get_height() / 3.0)
+	var bob = sin(clock * 22) * 1.5 if moving else sin(clock * 3.5 + row) * 0.5
+	var dest = Rect2(x - 55 - (face * 2 if firing else 0), y - 105 + bob, 110, 110)
+	draw_ellipse_shadow(Vector2(x, y + 1), 24 if not airborne else 15)
+	if face < 0:
+		dest.position.x += dest.size.x
+		dest.size.x = -dest.size.x
+	draw_texture_rect_region(actor_texture, dest, Rect2(Vector2(frame, row) * cell, cell))
+	if firing and (moving or airborne):
+		var muzzle = Vector2(x + face * 51, y - 61 + bob)
+		draw_line(muzzle, muzzle + Vector2(face * 17, 0), Color("ffdc72"), 5)
+		draw_line(muzzle, muzzle + Vector2(face * 10, -5), Color("fff3bb"), 3)
+
+func text_at(pos: Vector2, value: String, size: int, color: Color = Color.WHITE):
+	draw_string_outline(ThemeDB.fallback_font, pos, value, HORIZONTAL_ALIGNMENT_LEFT, -1, size, 4, Color("182129"))
+	draw_string(ThemeDB.fallback_font, pos, value, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
 
 func _draw():
-	box(0, 0, 960, 540, "e7ad75")
-	draw_circle(Vector2(740, 110), 53, Color("ffdc9a"))
-	for i in range(12):
-		var x = i * 170 - fmod(camera_x * 0.22, 170)
-		draw_colored_polygon(PackedVector2Array([Vector2(x - 90, 330), Vector2(x + 70, 140 + (i % 3) * 28), Vector2(x + 210, 330)]), Color("bb7d63"))
-	for i in range(17):
-		var x = i * 235 - fmod(camera_x * 0.55, 235)
-		var height = 130 + (i % 3) * 32
-		box(x, GROUND - height, 180, height, "bd865b")
-		box(x - 5, GROUND - height, 190, 10, "f1c58a")
-		for j in range(3):
-			box(x + 20 + j * 51, GROUND - height + 30, 22, 39, "624d42")
-			box(x + 23 + j * 51, GROUND - height + 32, 5, 35, "d7a16c")
-		box(x + 45, GROUND - 64, 50, 64, "66513d")
-		box(x + 16, GROUND - 91, 148, 14, "913f35")
-		for j in range(7): box(x + 18 + j * 21, GROUND - 91, 10, 14, "ead8b0")
-	box(0, GROUND, 960, 115, "92704f")
-	box(0, GROUND, 960, 12, "f3ca8b")
-	for i in range(70): box(fposmod(i * 83.0 - camera_x, 960), 448 + (i % 6) * 15, 15, 3, "b48b5b")
-	if not playing: return
+	if desert_texture != null:
+		# The artwork and live sprites use the same 960 x 540 coordinate system.
+		var scroll = clampf(camera_x / (END - 960.0), 0, 1) * 160.0
+		draw_texture_rect(desert_texture, Rect2(-scroll, 0, 1120, 540), false)
+	if not playing:
+		draw_rect(Rect2(0, 0, 960, 540), Color(0.04, 0.07, 0.09, 0.62))
+		return
+	# World shake never shifts the HUD or touch controls.
+	var jitter = Vector2(sin(clock * 87), cos(clock * 73)) * shake
+	draw_set_transform(jitter)
+	# Small atmospheric drifting dust motes, behind the actors.
+	for i in range(22):
+		var pos = Vector2(fposmod(i * 73.0 - clock * 15 - camera_x * 0.15, 960), 130 + fposmod(i * 43.0, 280))
+		draw_circle(pos, 1.0, Color(1, 0.88, 0.64, 0.45))
 	for e in enemies:
-		if e.hp > 0: soldier(e.x - camera_x, GROUND, "71794a", -1, false)
-	if boss_hp > 0:
-		var bx = 3160 - camera_x
-		box(bx - 90, GROUND - 42, 170, 39, "323f3e")
-		for i in range(6): draw_circle(Vector2(bx - 70 + i * 27, GROUND - 20), 14, Color("827f63"))
-		box(bx - 75, GROUND - 100, 145, 62, "646d4b")
-		box(bx - 45, GROUND - 147, 89, 50, "7f8052")
-		box(bx - 125, GROUND - 128, 100, 19, "3c4941")
-		box(bx - 25, GROUND - 135, 28, 13, "ef9b41")
-		box(bx - 75, GROUND - 165, 150, 7, "302f30")
-		box(bx - 75, GROUND - 165, 150.0 * boss_hp / 160, 7, "dd633d")
+		if e.hp > 0:
+			soldier(e.x - camera_x, GROUND, 2, e.get("face", -1), absf(e.get("vx", 0)) > 5, e.cd > 1.6)
+	if boss_hp > 0 and mech_texture != null:
+		var bx = boss_x - camera_x + boss_recoil
+		draw_texture_rect(mech_texture, Rect2(bx - 150, GROUND - 218 + sin(boss_phase * 7) * 3, 300, 235), false)
+		# The intact boss artwork rocks while exhaust, charge lights and gun flash animate separately.
+		if boss_recoil > 2:
+			draw_line(Vector2(bx - 143, GROUND - 115), Vector2(bx - 178, GROUND - 115), Color("fff1b0"), 9)
+		for lamp in range(3):
+			draw_circle(Vector2(bx + 30 + lamp * 13, GROUND - 192), 2.5, Color(1, 0.18, 0.06, 0.5 + sin(clock * 8 + lamp) * 0.4))
+		box(bx - 95, GROUND - 223, 190, 7, "242d2d")
+		box(bx - 94, GROUND - 222, 188.0 * boss_hp / 160, 5, "ed7145")
 	for i in range(players.size()):
 		var p = players[i]
+		var moving = absf(p.get("vx", 0)) > 10
+		var render_pos: Vector2 = render_positions.get(i, Vector2(p.x, p.y))
 		if p.hp > 0 and (p.inv <= 0 or int(clock * 15) % 2 == 0):
-			soldier(p.x - camera_x, p.y, "397fbb" if i == 0 else "b54f40", p.face, true)
-	for s in shots:
-		if s.grenade: draw_circle(Vector2(s.x - camera_x, s.y), 6, Color("394c38"))
-		else: box(s.x - camera_x, s.y, 15, 4, "ffdf74" if not s.enemy else "ff6645")
-	for p in particles:
-		draw_circle(Vector2(p.x - camera_x, GROUND - 25), (0.5 - p.life) * 200, Color(1, 0.5, 0.1, p.life * 2))
+			soldier(render_pos.x - camera_x, render_pos.y, i, p.face, moving, p.cd > 0.065, p.y < GROUND - 2)
+		visual_positions[i] = p.x
+	for shot in shots:
+		if shot.grenade:
+			draw_circle(Vector2(shot.x - camera_x, shot.y), 6, Color("33453d"))
+			box(shot.x - camera_x - 2, shot.y - 8, 4, 3, "f6ce7c")
+		else:
+			var pos = Vector2(shot.x - camera_x, shot.y)
+			draw_line(pos - Vector2(signf(shot.vx) * 22, 0), pos, Color(1, 0.65, 0.16, 0.25), 8)
+			draw_line(pos - Vector2(signf(shot.vx) * 15, 0), pos, Color("ffefb0"), 3)
+	for fx in effects:
+		var pos = Vector2(fx.x - camera_x, fx.y)
+		var alpha = clampf(fx.life / fx.duration, 0, 1)
+		match fx.kind:
+			"spark", "casing":
+				draw_line(pos, pos - Vector2(fx.vx, fx.vy).normalized() * 5, Color(1, 0.79, 0.33, alpha), 2)
+			"flame":
+				var radius = fx.size * (0.6 + alpha * 0.8)
+				var points = PackedVector2Array()
+				for k in range(10):
+					points.append(pos + Vector2.from_angle(k * TAU / 10) * radius * (0.8 + sin(k * 7.1 + fx.seed) * 0.2))
+				draw_colored_polygon(points, Color(1, 0.26 + alpha * 0.5, 0.06 + alpha * 0.18, alpha))
+				if alpha > 0.65: draw_circle(pos, radius * 0.45, Color("fff0b1"))
+			"smoke":
+				draw_circle(pos, fx.size * (1.6 - alpha), Color(0.23, 0.22, 0.2, alpha * 0.48))
+			"dust":
+				draw_circle(pos, fx.size * (1.4 - alpha), Color(0.86, 0.67, 0.41, alpha * 0.35))
+	draw_set_transform(Vector2.ZERO)
+	# HUD is drawn in viewport coordinates with explicit margins, independent of text layout.
+	draw_rect(Rect2(20, 16, 240, 65), Color(0.05, 0.1, 0.13, 0.87))
+	text_at(Vector2(33, 39), "P1  /  FALCON", 17, Color("f7dca8"))
+	box(34, 50, 210, 13, "3c423c")
+	box(36, 52, 206.0 * players[0].hp / 100, 9, "81ba65")
+	if players.size() > 1:
+		draw_rect(Rect2(700, 16, 240, 65), Color(0.05, 0.1, 0.13, 0.87))
+		text_at(Vector2(714, 39), "P2  /  EMBER", 17, Color("f7dca8"))
+		box(714, 50, 210, 13, "3c423c")
+		box(716, 52, 206.0 * players[1].hp / 100, 9, "df8661")
+	text_at(Vector2(391, 35), "G U L F - W A R", 19, Color("ffe1a0"))
+	text_at(Vector2(397, 61), "SCORE  %06d" % score, 16)
+	text_at(Vector2(32, 110), "01  /  THE DUST DISTRICT", 15, Color("ffe4b2"))
 	var centers = [Vector2(68, 465), Vector2(174, 465), Vector2(720, 465), Vector2(884, 440), Vector2(802, 485)]
-	var labels = ["◀", "▶", "↑", "FIRE", "BOMB"]
 	for i in range(5):
-		draw_circle(centers[i], 39, Color(0.08, 0.12, 0.15, 0.55))
-		draw_arc(centers[i], 39, 0, TAU, 36, Color(1, 0.86, 0.65, 0.7), 2)
-		draw_string(ThemeDB.fallback_font, centers[i] + Vector2(-22, 7), labels[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.WHITE)
+		var active = controls[i] or i in touch_actions.values()
+		var col = Color(0.09, 0.14, 0.17, 0.6) if not active else Color(0.55, 0.35, 0.12, 0.85)
+		draw_circle(centers[i], 37, col)
+		draw_arc(centers[i], 37, 0, TAU, 48, Color(0.95, 0.8, 0.54, 0.8), 1.7)
+		if i < 3:
+			var dir = Vector2(-1, 0) if i == 0 else (Vector2(1, 0) if i == 1 else Vector2(0, -1))
+			var c = centers[i]
+			draw_line(c - dir * 12, c + dir * 12, Color("ffe9bd"), 3)
+			draw_line(c + dir * 12, c + dir * 3 + dir.orthogonal() * 9, Color("ffe9bd"), 3)
+			draw_line(c + dir * 12, c + dir * 3 - dir.orthogonal() * 9, Color("ffe9bd"), 3)
+		else:
+			text_at(centers[i] + Vector2(-21, 5), "FIRE" if i == 3 else "BOMB", 15, Color("ffe9bd"))
 	var idx = 0 if host else 1
 	if players.size() > idx:
-		draw_string(ThemeDB.fallback_font, Vector2(750, 532), "GRENADES: %d" % players[idx].grenades, HORIZONTAL_ALIGNMENT_LEFT, -1, 15)
+		text_at(Vector2(745, 531), "GRENADES  %02d" % players[idx].grenades, 13, Color("e8d9bc"))
+
+	if finished:
+		draw_rect(Rect2(230, 190, 500, 125), Color(0.04, 0.08, 0.1, 0.93))
+		text_at(Vector2(300, 238), "MISSION COMPLETE" if boss_hp <= 0 else "MISSION FAILED", 29, Color("ffdfa2"))
+		text_at(Vector2(285, 283), "BACK / ESC  -  RETURN TO MENU", 18)
+
+func draw_ellipse_shadow(pos: Vector2, radius: float):
+	draw_set_transform(pos, 0, Vector2(1, 0.18))
+	draw_circle(Vector2.ZERO, radius, Color(0.06, 0.06, 0.05, 0.28))
+	draw_set_transform(Vector2(sin(clock * 87), cos(clock * 73)) * shake)
+
+func local_fx(x: float, y: float, kind: String, count: int):
+	for i in range(count):
+		if effects.size() >= 220: break
+		var duration = randf_range(0.22, 0.7)
+		var velocity = Vector2(randf_range(-95, 95), randf_range(-135, -35))
+		var size = randf_range(3, 9)
+		if kind == "flame":
+			duration = randf_range(0.22, 0.5)
+			velocity *= 1.5
+			size = randf_range(12, 27)
+		elif kind == "smoke":
+			duration = randf_range(0.7, 1.2)
+			velocity = Vector2(randf_range(-30, 30), randf_range(-90, -40))
+			size = randf_range(9, 21)
+		elif kind == "dust":
+			velocity.y *= 0.2
+		elif kind == "casing":
+			size = 2
+		effects.append({"x": x, "y": y, "vx": velocity.x, "vy": velocity.y, "kind": kind, "life": duration, "duration": duration, "size": size, "seed": randf() * 20})
+
+func dispatch_burst(x: float, y: float, large: bool):
+	if online and host: burst_event.rpc(x, y, large)
+	else: burst_event(x, y, large)
+
+@rpc("authority", "call_local", "reliable")
+func burst_event(x: float, y: float, large: bool):
+	local_fx(x, y, "flame", 18 if large else 6)
+	local_fx(x, y, "smoke", 10 if large else 4)
+	local_fx(x, y, "spark", 16 if large else 5)
+	shake = maxf(shake, 7 if large else 2)
+	play_sound("blast" if large else "hit")
+
+func impact_event(x: float, y: float, kind: String):
+	local_fx(x, y, kind, 5)
+
+func create_audio():
+	# Small original synthesized effects; no external sound downloads.
+	for kind in ["fire", "hit", "blast"]:
+		var duration = 0.09 if kind == "fire" else (0.16 if kind == "hit" else 0.55)
+		var count = int(22050 * duration)
+		var bytes = PackedByteArray()
+		bytes.resize(count * 2)
+		var filtered = 0.0
+		var rng = RandomNumberGenerator.new()
+		rng.seed = 1988
+		for i in range(count):
+			var t = float(i) / 22050
+			var envelope = pow(1.0 - float(i) / count, 2.0)
+			var noise = rng.randf_range(-1, 1)
+			filtered = lerpf(filtered, noise, 0.12 if kind == "blast" else 0.6)
+			var wave = (filtered * 0.8 + sin(t * (180 if kind == "blast" else 900) * TAU) * 0.2) * envelope
+			bytes.encode_s16(i * 2, int(clampf(wave, -1, 1) * 26000))
+		var stream = AudioStreamWAV.new()
+		stream.format = AudioStreamWAV.FORMAT_16_BITS
+		stream.mix_rate = 22050
+		stream.data = bytes
+		sound_bank[kind] = stream
+	for i in range(8):
+		var voice = AudioStreamPlayer.new()
+		voice.volume_db = -15
+		add_child(voice)
+		voices.append(voice)
+
+func play_sound(kind: String):
+	if voices.is_empty(): return
+	if kind == "fire":
+		if fire_audio_cooldown > 0: return
+		fire_audio_cooldown = 0.065
+	var voice = voices[voice_index % voices.size()]
+	voice_index += 1
+	voice.stream = sound_bank[kind]
+	voice.pitch_scale = randf_range(0.94, 1.06)
+	voice.play()
