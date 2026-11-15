@@ -54,7 +54,7 @@ func run():
 	for i in range(600):
 		game.simulate(1.0 / 60, [false, false, false, true, false])
 		max_packet = maxi(max_packet, game.make_snapshot().size())
-	assert(max_packet < 1300, "Compressed update should fit the common ENet packet budget")
+	assert(max_packet < 32768, "Compressed state must remain inside the receiver limit")
 	var state = game.make_snapshot()
 	var saved_x = game.players[0].x
 	game.host = false

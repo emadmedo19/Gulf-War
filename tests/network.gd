@@ -20,7 +20,7 @@ func begin():
 func check():
 	elapsed += root.get_process_delta_time()
 	if not server_mode: game.controls = [false, true, false, true, false]
-	if game.players.size() == 2 and game.players[1].x > (260 if server_mode else 300) and passed_at < 0:
+	if game.players.size() == 2 and game.players[1].x > (550 if server_mode else 600) and game.combat.waves_sent > 0 and passed_at < 0:
 		passed_at = elapsed
 		print("PASS: ENet ", "host received remote input" if server_mode else "guest received authoritative movement and state")
 	if passed_at >= 0 and elapsed > passed_at + (0.8 if server_mode else 0.05):

@@ -1,9 +1,31 @@
 {
+  "action_loop.wav": {
+    "bytes": 352844,
+    "sha256": "a801eb263a1214c34421886531b03c950f0ed601ab8d24fe7991f145427adbc6"
+  },
+  "actors.webp": {
+    "bytes": 572376,
+    "sha256": "fc29111ebaa2c9746e17c553206ce7e3237ef74737ffbb42e51d5d9a5422f248",
+    "width": 1448,
+    "height": 1086
+  },
+  "cave.webp": {
+    "bytes": 726338,
+    "sha256": "fe5f54f73acf9e5d106d392a09ef057cc95be92f2f73639ed03d2bec9975d4a5",
+    "width": 1536,
+    "height": 1024
+  },
   "desert.webp": {
     "bytes": 898244,
     "sha256": "1bf5f1dfc066f439f1e5f927a2aa0f5a01070590809d836250a97c2e2b8eee0d",
     "width": 1536,
     "height": 1024
+  },
+  "drone.webp": {
+    "bytes": 305100,
+    "sha256": "93cc8790c6182e939f60a4be10dd6da7cdd7ca0d37a62ea6f33d8827a453c264",
+    "width": 1682,
+    "height": 935
   },
   "mech.webp": {
     "bytes": 796606,
@@ -11,10 +33,10 @@
     "width": 1496,
     "height": 1051
   },
-  "actors.webp": {
-    "bytes": 572376,
-    "sha256": "fc29111ebaa2c9746e17c553206ce7e3237ef74737ffbb42e51d5d9a5422f248",
-    "width": 1448,
-    "height": 1086
+  "tank.webp": {
+    "bytes": 636356,
+    "sha256": "8a0d79421933c4461e60e5fc946aa5670e53813ee37f112855acdd165efcf476",
+    "width": 1774,
+    "height": 887
   }
 }
